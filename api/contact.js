@@ -79,23 +79,156 @@ export default async function handler(req, res) {
 }
 
 /**
+ * Normalize organization names to prevent duplicates
+ * Handles common abbreviations and variations
+ */
+function normalizeOrgName(name) {
+  let normalized = name.trim();
+  
+  // Convert to lowercase for comparison
+  normalized = normalized.toLowerCase();
+  
+  // Expand common state abbreviations
+  const stateAbbreviations = {
+    'ny': 'new york',
+    'nys': 'new york state',
+    'nyc': 'new york city',
+    'ca': 'california',
+    'tx': 'texas',
+    'fl': 'florida',
+    'il': 'illinois',
+    'pa': 'pennsylvania',
+    'oh': 'ohio',
+    'ga': 'georgia',
+    'nc': 'north carolina',
+    'mi': 'michigan',
+    'nj': 'new jersey',
+    'va': 'virginia',
+    'wa': 'washington',
+    'az': 'arizona',
+    'ma': 'massachusetts',
+    'tn': 'tennessee',
+    'in': 'indiana',
+    'mo': 'missouri',
+    'md': 'maryland',
+    'wi': 'wisconsin',
+    'co': 'colorado',
+    'mn': 'minnesota',
+    'sc': 'south carolina',
+    'al': 'alabama',
+    'la': 'louisiana',
+    'ky': 'kentucky',
+    'or': 'oregon',
+    'ok': 'oklahoma',
+    'ct': 'connecticut',
+    'ut': 'utah',
+    'ia': 'iowa',
+    'nv': 'nevada',
+    'ar': 'arkansas',
+    'ms': 'mississippi',
+    'ks': 'kansas',
+    'nm': 'new mexico',
+    'ne': 'nebraska',
+    'wv': 'west virginia',
+    'id': 'idaho',
+    'hi': 'hawaii',
+    'nh': 'new hampshire',
+    'me': 'maine',
+    'ri': 'rhode island',
+    'mt': 'montana',
+    'de': 'delaware',
+    'sd': 'south dakota',
+    'nd': 'north dakota',
+    'ak': 'alaska',
+    'vt': 'vermont',
+    'wy': 'wyoming',
+    'dc': 'district of columbia'
+  };
+  
+  // Replace state abbreviations (word boundaries to avoid false matches)
+  Object.entries(stateAbbreviations).forEach(([abbr, full]) => {
+    const regex = new RegExp(`\\b${abbr}\\b`, 'gi');
+    normalized = normalized.replace(regex, full);
+  });
+  
+  // Remove common corporate suffixes
+  const suffixes = [
+    'inc\\.?',
+    'incorporated',
+    'llc',
+    'l\\.l\\.c\\.?',
+    'corp\\.?',
+    'corporation',
+    'ltd\\.?',
+    'limited',
+    'co\\.?',
+    'company',
+    'pllc',
+    'p\\.l\\.l\\.c\\.?'
+  ];
+  
+  suffixes.forEach(suffix => {
+    const regex = new RegExp(`\\b${suffix}\\b`, 'gi');
+    normalized = normalized.replace(regex, '');
+  });
+  
+  // Normalize common words
+  normalized = normalized
+    .replace(/\bstate\s+senate\b/gi, 'senate')
+    .replace(/\bstate\s+assembly\b/gi, 'assembly')
+    .replace(/\bdept\b/gi, 'department')
+    .replace(/\bdiv\b/gi, 'division')
+    .replace(/\bgovt\b/gi, 'government')
+    .replace(/\buniv\b/gi, 'university')
+    .replace(/\bctr\b/gi, 'center')
+    .replace(/\bassoc\b/gi, 'association')
+    .replace(/\bintl\b/gi, 'international');
+  
+  // Remove extra spaces and punctuation
+  normalized = normalized
+    .replace(/[&]/g, 'and')
+    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  return normalized;
+}
+
+/**
  * Get existing organization or create a new one
  */
 async function getOrCreateOrganization(client, companyName) {
-  // Check if organization already exists (case-insensitive)
+  const trimmedName = companyName.trim();
+  const normalizedName = normalizeOrgName(trimmedName);
+  
+  // Check if organization already exists using normalized name
   const checkQuery = `
-    SELECT id FROM organizations_organization 
-    WHERE LOWER(name) = LOWER($1) 
+    SELECT id, name FROM organizations_organization 
+    WHERE LOWER(name) = LOWER($1) OR LOWER(name) = LOWER($2)
     LIMIT 1
   `;
   
-  const existing = await client.query(checkQuery, [companyName.trim()]);
+  const existing = await client.query(checkQuery, [trimmedName, normalizedName]);
   
   if (existing.rows.length > 0) {
     return existing.rows[0].id;
   }
-
-  // Create new organization
+  
+  // Also check with normalized version stored previously
+  const normalizedCheck = `
+    SELECT id, name FROM organizations_organization 
+    WHERE LOWER(REGEXP_REPLACE(REGEXP_REPLACE(LOWER(name), '[^a-z0-9\\s]', '', 'g'), '\\s+', ' ', 'g')) = $1
+    LIMIT 1
+  `;
+  
+  const normalizedExisting = await client.query(normalizedCheck, [normalizedName]);
+  
+  if (normalizedExisting.rows.length > 0) {
+    return normalizedExisting.rows[0].id;
+  }
+  
+  // Create new organization with the ORIGINAL name (for display)
+  // but we've checked for duplicates using the normalized name
   const insertQuery = `
     INSERT INTO organizations_organization (
       id, created_at, updated_at, name, legal_name, description, 
@@ -110,7 +243,7 @@ async function getOrCreateOrganization(client, companyName) {
     ) RETURNING id
   `;
   
-  const result = await client.query(insertQuery, [companyName.trim()]);
+  const result = await client.query(insertQuery, [trimmedName]);
   return result.rows[0].id;
 }
 
