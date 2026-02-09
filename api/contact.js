@@ -330,19 +330,30 @@ async function linkPersonToOrganization(client, personId, organizationId, data) 
       gen_random_uuid(), NOW(), NOW(), $1, $2,
       $3, '', true, true,
       '', '', '', $4,
-      false, ARRAY[]::text[], '',
+      false, $5, '',
       '', '', ''
     )
   `;
   
   // Truncate fields to their database limits
   const jobTitle = truncateField(data.job_title || data.role, 200);
-  const notes = data.org_notes || '';
+  const notes = data.notes || '';
+  
+  // Handle issue_areas - convert to array format for PostgreSQL
+  let issueAreasArray = [];
+  if (data.issue_areas && data.issue_areas.trim() !== '') {
+    // Split by comma, semicolon, or newline and clean up
+    issueAreasArray = data.issue_areas
+      .split(/[,;\n]/)
+      .map(area => area.trim())
+      .filter(area => area.length > 0);
+  }
   
   await client.query(insertQuery, [
     personId,
     organizationId,
     jobTitle,
     notes,
+    issueAreasArray, // PostgreSQL will handle the array conversion
   ]);
 }
