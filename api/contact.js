@@ -71,11 +71,38 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Error processing contact:', error);
+    
+    // Provide more helpful error messages
+    let errorMessage = 'Failed to add contact';
+    let errorDetails = error.message;
+    
+    // Check for common database errors
+    if (error.message.includes('value too long')) {
+      errorMessage = 'One of the fields is too long';
+      errorDetails = 'Please check that phone numbers, names, and other fields are not excessively long. Phone numbers should be under 50 characters.';
+    } else if (error.message.includes('duplicate key')) {
+      errorMessage = 'This person may already exist in the database';
+      errorDetails = error.message;
+    } else if (error.message.includes('not-null')) {
+      errorMessage = 'Missing required information';
+      errorDetails = 'First name and last name are required.';
+    }
+    
     return res.status(500).json({
-      error: 'Failed to add contact',
-      details: error.message,
+      error: errorMessage,
+      details: errorDetails,
+      debug_info: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
+}
+
+/**
+ * Safely truncate string fields to database column limits
+ */
+function truncateField(value, maxLength) {
+  if (!value) return '';
+  const str = String(value).trim();
+  return str.length > maxLength ? str.substring(0, maxLength) : str;
 }
 
 /**
@@ -92,7 +119,6 @@ function normalizeOrgName(name) {
   const stateAbbreviations = {
     'ny': 'new york',
     'nys': 'new york state',
-    'nyc': 'new york city',
     'ca': 'california',
     'tx': 'texas',
     'fl': 'florida',
@@ -267,20 +293,23 @@ async function createPerson(client, data) {
     ) RETURNING id
   `;
   
-  const fullName = `${data.first_name} ${data.last_name}`;
-  const email = data.email || '';
-  const phone = data.phone || '';
-  const mobilePhone = data.mobile_phone || phone;
+  // Truncate fields to their database limits
+  const firstName = truncateField(data.first_name, 150);
+  const lastName = truncateField(data.last_name, 150);
+  const email = truncateField(data.email, 254);
+  const phone = truncateField(data.phone, 50);
+  const mobilePhone = truncateField(data.mobile_phone || data.phone, 50);
   const notes = data.notes || '';
+  const fullName = truncateField(`${firstName} ${lastName}`, 255);
   
   const result = await client.query(insertQuery, [
-    data.first_name.trim(),
-    data.last_name.trim(),
-    email.trim(),
-    phone.trim(),
-    mobilePhone.trim(),
-    notes.trim(),
-    fullName.trim(),
+    firstName,
+    lastName,
+    email,
+    phone,
+    mobilePhone,
+    notes,
+    fullName,
   ]);
   
   return result.rows[0].id;
@@ -306,13 +335,14 @@ async function linkPersonToOrganization(client, personId, organizationId, data) 
     )
   `;
   
-  const jobTitle = data.job_title || data.role || '';
+  // Truncate fields to their database limits
+  const jobTitle = truncateField(data.job_title || data.role, 200);
   const notes = data.org_notes || '';
   
   await client.query(insertQuery, [
     personId,
     organizationId,
-    jobTitle.trim(),
-    notes.trim(),
+    jobTitle,
+    notes,
   ]);
 }
