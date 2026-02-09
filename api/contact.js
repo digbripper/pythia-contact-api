@@ -49,6 +49,11 @@ export default async function handler(req, res) {
       // Step 3: Link Person to Organization (if organization exists)
       if (organizationId) {
         await linkPersonToOrganization(client, personId, organizationId, contactData);
+        
+        // Step 4: Link Organization to Issues (if issue_areas provided)
+        if (contactData.issue_areas) {
+          await linkOrganizationToIssues(client, organizationId, contactData.issue_areas);
+        }
       }
 
       // Commit the transaction
@@ -103,6 +108,80 @@ function truncateField(value, maxLength) {
   if (!value) return '';
   const str = String(value).trim();
   return str.length > maxLength ? str.substring(0, maxLength) : str;
+}
+
+/**
+ * Get existing issue or create a new one
+ */
+async function getOrCreateIssue(client, issueName) {
+  const trimmedName = issueName.trim();
+  
+  // Check if issue already exists (case-insensitive)
+  const checkQuery = `
+    SELECT id FROM organizations_issue 
+    WHERE LOWER(name) = LOWER($1)
+    LIMIT 1
+  `;
+  
+  const existing = await client.query(checkQuery, [trimmedName]);
+  
+  if (existing.rows.length > 0) {
+    return existing.rows[0].id;
+  }
+  
+  // Create new issue
+  const insertQuery = `
+    INSERT INTO organizations_issue (
+      id, created_at, updated_at, name, category, description, external_id
+    ) VALUES (
+      gen_random_uuid(), NOW(), NOW(), $1, 'General', '', NULL
+    ) RETURNING id
+  `;
+  
+  const result = await client.query(insertQuery, [trimmedName]);
+  return result.rows[0].id;
+}
+
+/**
+ * Link organization to issues
+ */
+async function linkOrganizationToIssues(client, organizationId, issueAreas) {
+  if (!issueAreas || issueAreas.trim() === '') {
+    return; // No issues to link
+  }
+  
+  // Split by comma, semicolon, or newline and clean up
+  const issueNames = issueAreas
+    .split(/[,;\n]/)
+    .map(name => name.trim())
+    .filter(name => name.length > 0);
+  
+  // For each issue name, get/create the issue and link it
+  for (const issueName of issueNames) {
+    const issueId = await getOrCreateIssue(client, issueName);
+    
+    // Check if link already exists
+    const checkLinkQuery = `
+      SELECT id FROM organizations_organizationissue
+      WHERE organization_id = $1 AND issue_id = $2
+      LIMIT 1
+    `;
+    
+    const existingLink = await client.query(checkLinkQuery, [organizationId, issueId]);
+    
+    if (existingLink.rows.length === 0) {
+      // Create the link
+      const insertLinkQuery = `
+        INSERT INTO organizations_organizationissue (
+          id, created_at, updated_at, organization_id, issue_id, priority, notes
+        ) VALUES (
+          gen_random_uuid(), NOW(), NOW(), $1, $2, 0, ''
+        )
+      `;
+      
+      await client.query(insertLinkQuery, [organizationId, issueId]);
+    }
+  }
 }
 
 /**
@@ -330,7 +409,7 @@ async function linkPersonToOrganization(client, personId, organizationId, data) 
       gen_random_uuid(), NOW(), NOW(), $1, $2,
       $3, '', true, true,
       '', '', '', $4,
-      false, $5, '',
+      false, ARRAY[]::text[], '',
       '', '', ''
     )
   `;
@@ -339,21 +418,10 @@ async function linkPersonToOrganization(client, personId, organizationId, data) 
   const jobTitle = truncateField(data.job_title || data.role, 200);
   const notes = data.notes || '';
   
-  // Handle issue_areas - convert to array format for PostgreSQL
-  let issueAreasArray = [];
-  if (data.issue_areas && data.issue_areas.trim() !== '') {
-    // Split by comma, semicolon, or newline and clean up
-    issueAreasArray = data.issue_areas
-      .split(/[,;\n]/)
-      .map(area => area.trim())
-      .filter(area => area.length > 0);
-  }
-  
   await client.query(insertQuery, [
     personId,
     organizationId,
     jobTitle,
     notes,
-    issueAreasArray, // PostgreSQL will handle the array conversion
   ]);
 }
